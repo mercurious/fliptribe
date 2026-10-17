@@ -1,0 +1,7 @@
+# Build environment for the fliptribe binary. ubuntu:24.04 has glibc 2.39 and libstdc++ GLIBCXX_3.4.33;
+# ROCKNIX 20261001 has glibc 2.41 and GLIBCXX_3.4.34, so what is built here runs there. The SDL2 here is
+# 2.30; the device ships 2.32, same ABI.
+FROM docker.io/library/ubuntu:24.04
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+      build-essential cmake ninja-build pkg-config git ca-certificates \
+      libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libasound2-dev >/dev/null && rm -rf /var/lib/apt/lists/*
