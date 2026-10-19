@@ -1,20 +1,27 @@
 // fliptribe: the audio engine. Owns the live Pattern, the two voices with their effects and the sequencer.
 // The UI thread never touches engine state directly: it sends Commands through a lock-free queue and reads
-// a snapshot the engine refreshes after every audio callback (try-lock, so audio never blocks).
+// a snapshot the engine refreshes after every audio callback (try-lock, so audio never blocks). Wi-Fi sync reads
+// the transport through a seqlocked SyncClock instead, which is lighter and carries a timestamp.
 #pragma once
 #include "params.h"
 #include "dsp.h"
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <cstring>
+
+// steady clock in microseconds; the engine stamps its SyncClock with it and Wi-Fi sync polls with it
+inline int64_t monoMicros() { return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 struct Command {
   enum Type : uint8_t {
     None, SetPart, SetGlobal, SetTempo10, ToggleStep, SetStep, SetStepNote, SetStepGate,
     Play, Stop, PlayStop, ResetPlay, SetRec, SetMute, NoteOn, NoteOff, LoadPattern, ClearMotion, ClearPart,
-    CopyPart, SetEditPart, TapTempo, SetTranspose, EraseHold, AllNotesOff
+    CopyPart, SetEditPart, TapTempo, SetTranspose, EraseHold, AllNotesOff,
+    SetRate, PlayFrom, Jump   // Wi-Fi sync: x = speed factor / start position / phase jump, positions in 16th notes
   } type = None;
   int a = 0, b = 0, c = 0, d = 0;
+  double x = 0.0;
   Pattern* pat = nullptr;   // for LoadPattern: engine copies from it, then returns it through takeFreed()
 };
 
@@ -46,6 +53,15 @@ struct Snapshot {
   int soundingNote[kParts] = {-1, -1};   // pitch currently gated per part, -1 = silent
 };
 
+// Transport as Wi-Fi sync sees it. pos counts 16th notes since play started whatever the BEAT scale (a 32nd
+// step is half of one, a triplet step 4/3), unwrapped; perSec is how fast it moves, rate trim included.
+struct SyncClock {
+  bool playing = false;
+  int tempo10 = 1300;
+  double pos = 0.0, perSec = 0.0;
+  int64_t stampUs = 0;
+};
+
 class Engine {
 public:
   Engine();
@@ -55,6 +71,7 @@ public:
   void snapshot(Snapshot& out) { std::lock_guard<std::mutex> lk(snapMutex); out = snap; }
   Pattern* takeFreed();
   float sampleRate() const { return sr; }
+  SyncClock syncClock(int64_t nowUs) const;     // any thread; pos is extrapolated from the last callback to nowUs
 
 private:
   struct Voice {
@@ -84,8 +101,13 @@ private:
   void onStep();
   void applyMotionTargets(int stepIdx);
   float stepSamples() const;
+  float swingFrac() const;
+  double sixteenthsPerStep() const;
+  double linFrac() const;
+  void moveBy(double sixteenths);
   void publish();
-  void startPlay();
+  void publishClock();
+  void startPlay(double sixteenths = 0.0);
   void stopPlay();
   void adoptPattern(const Pattern& p, bool keepTempo);
 
@@ -98,6 +120,8 @@ private:
   bool playing = false, rec = false, eraseHold = false;
   int step = 0;
   double stepPos = 0.0, stepLen = 1.0;
+  double rate = 1.0;            // Wi-Fi sync speed trim, 0.9 .. 1.1
+  double clockAtStep = 0.0;     // 16th notes since play started, at the unswung start of the current step
   int editPart = 0, transpose = 0;
   double tapLast = -1.0; int tapCount = 0; double tapAvg = 0; double clockSamples = 0;
   float lim = 1.0f;
@@ -106,4 +130,10 @@ private:
   Ring<32> freed;
   std::mutex snapMutex;
   Snapshot snap;
+  // SyncClock behind a seqlock: odd while the audio thread writes
+  std::atomic<uint32_t> clkSeq{0};
+  std::atomic<bool> clkPlaying{false};
+  std::atomic<int> clkTempo10{1300};
+  std::atomic<double> clkPos{0.0}, clkPerSec{0.0};
+  std::atomic<int64_t> clkStamp{0};
 };

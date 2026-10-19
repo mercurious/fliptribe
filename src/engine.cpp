@@ -21,6 +21,7 @@ void Engine::init(float sampleRate) {
   }
   for (int i = 0; i < NUM_GLOBAL_PARAMS; i++) gLive[i] = pat.g[i];
   publish();
+  publishClock();
 }
 
 Pattern* Engine::takeFreed() { Command c; if (freed.pop(c)) return c.pat; return nullptr; }
@@ -35,6 +36,39 @@ float Engine::stepSamples() const {
   }
 }
 
+float Engine::swingFrac() const {
+  if (pat.g[G_BEAT] == 2) return 0.0f;                    // no swing in triplet scale
+  return (gLive[G_SWING] / 25.0f) * 0.5f;                 // 75 % = even steps half a step late
+}
+
+// Wi-Fi sync counts in 16th notes whatever the scale: a 32nd step is half of one, a triplet step 4/3
+double Engine::sixteenthsPerStep() const { return pat.g[G_BEAT] == 1 ? 0.5 : (pat.g[G_BEAT] == 2 ? 4.0 / 3.0 : 1.0); }
+
+// How far into the current step we are on the unswung grid, in steps. Swing makes even steps long and odd ones
+// short; measured this way the position moves at an even speed, so units with different swing still line up.
+double Engine::linFrac() const {
+  if (!playing) return 0.0;
+  double base = stepSamples();
+  double f = (step % 2 == 0 ? stepPos : stepPos + base - stepLen) / base;
+  return std::clamp(f, 0.0, 2.0);
+}
+
+// Move the playhead by a number of 16th notes without triggering anything (Wi-Fi sync phase jumps). The pattern
+// position wraps; the 16th-note count does not.
+void Engine::moveBy(double sixteenths) {
+  double k = sixteenthsPerStep(), frac = linFrac();
+  double clock = clockAtStep + k * frac + sixteenths;
+  int len = pat.steps();                                  // always even: 12 or 16 steps a bar
+  double t = std::fmod(step + frac + sixteenths / k, (double)len);
+  if (t < 0.0) t += len;
+  int pair = std::min(len - 2, (int)(t / 2.0) * 2);
+  double p = t - pair, sw = swingFrac(), base = stepSamples();
+  if (p < 1.0 + sw) { step = pair; stepLen = base * (1.0 + sw); stepPos = p * base; }
+  else { step = pair + 1; stepLen = base * (1.0 - sw); stepPos = (p - 1.0 - sw) * base; }
+  clockAtStep = clock - k * (p - (step - pair));
+  applyMotionTargets(step);
+}
+
 void Engine::adoptPattern(const Pattern& p, bool keepTempo) {
   uint16_t t = pat.tempo10;
   pat = p;
@@ -46,15 +80,18 @@ void Engine::adoptPattern(const Pattern& p, bool keepTempo) {
   for (int i = 0; i < NUM_GLOBAL_PARAMS; i++) gLive[i] = pat.g[i];
 }
 
-void Engine::startPlay() {
-  playing = true; step = 0; stepPos = 0.0;
-  stepLen = stepSamples();
+// Start from the top, or (Wi-Fi sync follower) from a 16th-note position. Landing in the second half of a step
+// means its notes are already late: they wait for the next step instead.
+void Engine::startPlay(double sixteenths) {
+  playing = true; step = 0; stepPos = 0.0; clockAtStep = 0.0;
+  stepLen = stepSamples() * (1.0 + swingFrac());          // step 0 is the long half of the first swing pair
   for (int p = 0; p < kParts; p++) voice[p].gateLeft = 0;
-  onStep();
+  if (sixteenths != 0.0) moveBy(sixteenths);
+  if (stepPos < stepLen * 0.5) onStep();
 }
 
 void Engine::stopPlay() {
-  playing = false; step = 0; stepPos = 0.0;
+  playing = false; step = 0; stepPos = 0.0; clockAtStep = 0.0;
   for (int p = 0; p < kParts; p++) {
     if (!voice[p].held) release(p);
     for (int i = 0; i < NUM_PART_PARAMS; i++) voice[p].recLeft[i] = 0;
@@ -227,6 +264,9 @@ void Engine::handle(const Command& c) {
       tapLast = now;
       break;
     }
+    case Command::SetRate: rate = std::clamp(c.x, 0.9, 1.1); break;
+    case Command::PlayFrom: startPlay(c.x); break;
+    case Command::Jump: if (playing) moveBy(c.x); break;
     default: break;
   }
 }
@@ -235,8 +275,7 @@ void Engine::render(float* out, int frames) {
   Command c;
   while (q.pop(c)) handle(c);
 
-  float swingFrac = (gLive[G_SWING] / 25.0f) * 0.5f;      // 75 % = even steps half a step late
-  if (pat.g[G_BEAT] == 2) swingFrac = 0.0f;               // no swing in triplet scale
+  float swing = swingFrac();
   float baseStep = stepSamples();
 
   // per-part delay / chorus settings, once per block
@@ -253,11 +292,12 @@ void Engine::render(float* out, int frames) {
   for (int n = 0; n < frames; n++) {
     clockSamples += 1.0;
     if (playing) {
-      stepPos += 1.0;
+      stepPos += rate;
       if (stepPos >= stepLen) {
         stepPos -= stepLen;
+        clockAtStep += sixteenthsPerStep();
         step = (step + 1) % len;
-        float swingDelay = baseStep * swingFrac;
+        float swingDelay = baseStep * swing;
         stepLen = (step % 2 == 0) ? baseStep + swingDelay : baseStep - swingDelay;
         onStep();
         len = pat.steps();
@@ -348,6 +388,37 @@ void Engine::render(float* out, int frames) {
     out[2 * n] = o; out[2 * n + 1] = o;
   }
   publish();
+  publishClock();
+}
+
+void Engine::publishClock() {
+  uint32_t seq = clkSeq.load(std::memory_order_relaxed);
+  clkSeq.store(seq + 1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_release);
+  clkPlaying.store(playing, std::memory_order_relaxed);
+  clkTempo10.store(pat.tempo10, std::memory_order_relaxed);
+  clkPos.store(playing ? clockAtStep + sixteenthsPerStep() * linFrac() : 0.0, std::memory_order_relaxed);
+  clkPerSec.store(playing ? pat.tempo10 / 150.0 * rate : 0.0, std::memory_order_relaxed);   // BPM / 15 = 16ths a second
+  clkStamp.store(monoMicros(), std::memory_order_relaxed);
+  clkSeq.store(seq + 2, std::memory_order_release);
+}
+
+SyncClock Engine::syncClock(int64_t nowUs) const {
+  SyncClock k;
+  uint32_t s0, s1;
+  do {
+    s0 = clkSeq.load(std::memory_order_acquire);
+    k.playing = clkPlaying.load(std::memory_order_relaxed);
+    k.tempo10 = clkTempo10.load(std::memory_order_relaxed);
+    k.pos = clkPos.load(std::memory_order_relaxed);
+    k.perSec = clkPerSec.load(std::memory_order_relaxed);
+    k.stampUs = clkStamp.load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    s1 = clkSeq.load(std::memory_order_relaxed);
+  } while ((s0 & 1) || s0 != s1);
+  // the audio thread renders in blocks: carry the position on to now (at most 100 ms, in case audio stalled)
+  if (k.stampUs) k.pos += k.perSec * std::clamp(nowUs - k.stampUs, (int64_t)0, (int64_t)100000) * 1e-6;
+  return k;
 }
 
 void Engine::publish() {

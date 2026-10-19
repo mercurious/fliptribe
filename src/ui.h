@@ -3,6 +3,7 @@
 #pragma once
 #include "engine.h"
 #include "gfx.h"
+#include "sync.h"
 #include <vector>
 #include <map>
 #include <string>
@@ -11,7 +12,7 @@ enum CtlKind : uint8_t { K_KNOB, K_BUTTON, K_STEP, K_DIAL, K_ROW };
 enum Scope : uint8_t { S_PART, S_GLOBAL, S_ACTION };
 enum Action : uint8_t { A_NONE, A_PLAY, A_STOP, A_REC, A_WRITE, A_TAP, A_SHIFT, A_PART_SELECT, A_MUTE1, A_MUTE2,
                         A_SEL_PREV, A_SEL_NEXT, A_KEYBOARD, A_TRANSPOSE, A_CURSOR_UP, A_CURSOR_DOWN, A_FX_TYPE,
-                        A_MODE_PATTERN, A_MODE_SONG, A_MODE_GLOBAL, A_MODE_MIDI };
+                        A_MODE_PATTERN, A_MODE_SONG, A_MODE_GLOBAL, A_MODE_MIDI, A_SYNC };
 enum Row : uint8_t { R_PATTERN, R_TEMPO, R_STEP, R_PITCH, R_GATE, NUM_ROWS };
 
 struct Control {
@@ -26,6 +27,7 @@ class Panel {
 public:
   Panel(Engine& e, Gfx& g) : eng(e), gfx(g) {}
   bool init(int slot, int master);
+  void setSync(WifiSync* w) { sync = w; }     // before init; null = no Wi-Fi sync key action
   void handleEvent(const SDL_Event& ev);
   void update(float dt);
   void draw();
@@ -36,6 +38,7 @@ public:
 
 private:
   Engine& eng; Gfx& gfx;
+  WifiSync* sync = nullptr;
   Snapshot s;
   std::vector<Control> ctls;
   SDL_Texture* staticLayer = nullptr;

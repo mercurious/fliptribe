@@ -61,7 +61,8 @@ void Gfx::frame(int x, int y, int w, int h, Color c, int t) { for (int i = 0; i 
 
 void Gfx::roundRect(int x, int y, int w, int h, int rad, Color c) {
   SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
-  if (rad * 2 > w) rad = w / 2; if (rad * 2 > h) rad = h / 2;
+  if (rad * 2 > w) rad = w / 2;
+  if (rad * 2 > h) rad = h / 2;
   SDL_Rect mid{x, y + rad, w, h - 2 * rad}; SDL_RenderFillRect(ren, &mid);
   for (int i = 0; i < rad; i++) {
     float dy = rad - i - 0.5f;

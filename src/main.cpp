@@ -2,6 +2,7 @@
 //   fliptribe                      run the panel full screen
 //   fliptribe --window             run in a 1920x1080 window (desktop testing)
 //   fliptribe --play               start the sequencer right away (testing over ssh)
+//   fliptribe --sync OFF|AUTO|LEAD|FOLLOW   Wi-Fi sync mode (saved in settings; HI5S protocol on UDP 5150)
 //   fliptribe --render out.wav --seconds 8 [--slot A01]   render a pattern offline, no window, no audio device
 //   fliptribe --screenshot out.bmp [--slot A01]           draw one frame offscreen and save it
 // Env: FLIPTRIBE_DATA (user patterns + settings), FLIPTRIBE_ASSETS, FLIPTRIBE_PATTERNS, FLIPTRIBE_RATE (default 39062.5,
@@ -11,6 +12,7 @@
 #include "gfx.h"
 #include "ui.h"
 #include "store.h"
+#include "sync.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -43,7 +45,7 @@ static bool writeWav(const std::string& path, const std::vector<float>& inter, i
 }
 
 int main(int argc, char** argv) {
-  std::string renderPath, shotPath; float seconds = 8.0f; int slot = -1; bool windowed = false, autoplay = false;
+  std::string renderPath, shotPath, syncArg; float seconds = 8.0f; int slot = -1; bool windowed = false, autoplay = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     if (a == "--render" && i + 1 < argc) renderPath = argv[++i];
@@ -52,7 +54,8 @@ int main(int argc, char** argv) {
     else if (a == "--slot" && i + 1 < argc) slot = parseSlot(argv[++i]);
     else if (a == "--window") windowed = true;
     else if (a == "--play") autoplay = true;
-    else if (a == "--help" || a == "-h") { printf("fliptribe [--window] [--render out.wav --seconds N] [--screenshot out.bmp] [--slot A01]\n"); return 0; }
+    else if (a == "--sync" && i + 1 < argc) syncArg = argv[++i];
+    else if (a == "--help" || a == "-h") { printf("fliptribe [--window] [--play] [--sync OFF|AUTO|LEAD|FOLLOW] [--render out.wav --seconds N] [--screenshot out.bmp] [--slot A01]\n"); return 0; }
   }
   float rate = 39062.5f;
   if (const char* r = getenv("FLIPTRIBE_RATE")) rate = (float)atof(r);
@@ -61,6 +64,11 @@ int main(int argc, char** argv) {
   store::loadSettings(settings);
   if (slot < 0) slot = (int)settings.numOr("slot", 0);
   int master = (int)settings.numOr("master", 100);
+  int syncMode = syncModeFromName(settings.strOr("sync", "OFF"), SYNC_OFF);
+  if (!syncArg.empty()) {
+    syncMode = syncModeFromName(syncArg, -1);
+    if (syncMode < 0) { fprintf(stderr, "--sync takes OFF, AUTO, LEAD or FOLLOW\n"); return 1; }
+  }
   store::seedFromShipped();
 
   Engine engine; gEngine = &engine;
@@ -98,7 +106,11 @@ int main(int argc, char** argv) {
 
   Gfx gfx;
   if (!gfx.init(ren, store::assetDir() + "/fonts")) return 1;
+  WifiSync sync(engine);
+  sync.setMode(syncMode);
+  if (!offscreen) sync.open();
   Panel panel(engine, gfx);
+  panel.setSync(&sync);
   panel.init(slot, master);
 
   SDL_AudioDeviceID dev = 0;
@@ -121,6 +133,7 @@ int main(int argc, char** argv) {
     float dt = (float)(now - last) / (float)SDL_GetPerformanceFrequency(); last = now;
     if (dt > 0.1f) dt = 0.1f;
     if (offscreen) { static float dummy[512 * 2]; for (int i = 0; i < 4; i++) engine.render(dummy, 512); }   // no audio thread: pump the engine so the snapshot reflects the loaded pattern
+    sync.poll((uint64_t)monoMicros());
     panel.update(dt);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
@@ -139,8 +152,10 @@ int main(int argc, char** argv) {
   json::Value out = json::Value::obj();
   out["slot"] = json::Value::num(panel.currentSlot());
   out["master"] = json::Value::num(panel.masterVolume());
+  out["sync"] = json::Value::str(kSyncModeNames[sync.mode()]);
   store::saveSettings(out);
   panel.shutdown();
+  sync.close();
   gfx.shutdown();
   SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
   return 0;

@@ -56,6 +56,7 @@ void Panel::layout() {
   btn(S_PART, P_MOTION_SEQ, 262, 572, 110, 40, "MOTION SEQ", 3);
   btn(S_ACTION, A_MUTE1, 400, 572, 100, 40, "MUTE 1");
   btn(S_ACTION, A_MUTE2, 520, 572, 100, 40, "MUTE 2");
+  btn(S_ACTION, A_SYNC, 640, 572, 100, 40, "WI-FI SYNC");   // not on the hardware: tempo/phase link to HI5 & co.
 
   // ---- amp ----
   btn(S_PART, P_DISTORTION, 800, 470, 110, 44, "DISTORTION");
@@ -230,7 +231,7 @@ std::string Panel::noteName(int n) const {
 }
 std::string Panel::noteName3(int n) const {
   static const char* nm[] = {"C ", "C#", "D ", "D#", "E ", "F ", "F#", "G ", "G#", "A ", "A#", "B "};
-  int oct = n / 12 - 1; char b[8];
+  int oct = n / 12 - 1; char b[16];
   if (oct < 0) snprintf(b, sizeof b, "%c-1", nm[n % 12][0]); else snprintf(b, sizeof b, "%s%d", nm[n % 12], oct);
   return b;
 }
@@ -396,7 +397,15 @@ void Panel::action(Action a, bool down) {
     case A_CURSOR_DOWN: if (down) { row = (row + 1) % NUM_ROWS; swingDial = 0; showRow(); } break;
     case A_FX_TYPE: if (down) { fxType = 1 - fxType; msg(fxType ? "CHo" : "dLy", fxType ? "DEPTH / TIME now edit CHORUS-FLANGER" : "DEPTH / TIME now edit TEMPO DELAY", 1.2f); } break;
     case A_MODE_PATTERN: if (down) msg("Ptn", "PATTERN MODE", 0.8f); break;
-    case A_MODE_SONG: case A_MODE_GLOBAL: case A_MODE_MIDI: if (down) msg("---", a == A_MODE_SONG ? "SONG MODE: not in this version" : (a == A_MODE_GLOBAL ? "GLOBAL MODE: not in this version" : "MIDI MODE: not in this version"), 1.2f); break;
+    case A_MODE_SONG: case A_MODE_GLOBAL: case A_MODE_MIDI: if (down) msg("---", a == A_MODE_SONG ? "SONG MODE: not in this version" : (a == A_MODE_GLOBAL ? "GLOBAL MODE: not in this version" : "MIDI MODE: not in this version (WI-FI SYNC links tempo)"), 1.2f); break;
+    case A_SYNC:
+      if (down && sync) {
+        static const char* const seg[NUM_SYNC_MODES] = {"oFF", "Aut", "LEd", "FoL"};
+        static const char* const what[NUM_SYNC_MODES] = {"not linked", "lowest id leads", "this unit leads", "never leads"};
+        int m = (sync->mode() + 1) % NUM_SYNC_MODES; sync->setMode(m);
+        msg(seg[m], std::string("WI-FI SYNC ") + kSyncModeNames[m] + "  (" + what[m] + ")  HI5 / Jaffedrone / Rap Machine on UDP 5150", 2.0f);
+      }
+      break;
     default: break;
   }
 }
@@ -571,6 +580,7 @@ void Panel::handleEvent(const SDL_Event& ev) {
         case SDLK_a: press(focus, true, -1); press(focus, false, -1); break;
         case SDLK_TAB: action(A_TAP, true); break;
         case SDLK_f: action(A_FX_TYPE, true); break;
+        case SDLK_s: action(A_SYNC, true); break;
       }
       break;
     }
@@ -657,12 +667,17 @@ void Panel::drawButton(const Control& c) {
       case A_KEYBOARD: lit = keyboard; led = C_LED_ORANGE; break;
       case A_WRITE: lit = writeArmed ? std::fmod(blink, 0.4f) < 0.2f : (dirty && std::fmod(blink, 1.0f) < 0.5f); led = C_LED_ORANGE; break;
       case A_MODE_PATTERN: lit = true; break;
+      case A_SYNC: if (sync && sync->mode() != SYNC_OFF) {
+          // green once linked (leading or following), orange blinking while nobody answers
+          bool linked = sync->status().leading || sync->status().haveLeader;
+          lit = linked || std::fmod(blink, 1.0f) < 0.5f; led = linked ? C_LED_GREEN : C_LED_ORANGE;
+        } break;
       default: break;
     }
   } else if (c.ledCount == 0) lit = v != 0;
   gfx.roundRect(x, y + 3, c.w, c.h, 7, Color{0, 0, 0, 70});
   gfx.roundRect(x, y, c.w, c.h, 7, down ? C_BTN_DOWN : body);
-  gfx.roundRect(x + 2, y + 2, c.w - 4, c.h / 2 - 2, 5, Color{255, 255, 255, down ? 10 : 22});
+  gfx.roundRect(x + 2, y + 2, c.w - 4, c.h / 2 - 2, 5, Color{255, 255, 255, (uint8_t)(down ? 10 : 22)});
   if (c.ledCount == 0) {
     gfx.blit(lit ? gfx.led(5, led) : gfx.ledOff(5), x + 14, y + 13);
     if (c.scope == S_ACTION && big) {
@@ -670,6 +685,21 @@ void Panel::drawButton(const Control& c) {
       gfx.text(sym, c.cx + 6, c.cy - 12, c.id == A_REC ? Color{255, 90, 70} : C_WHITE, Gfx::F_BOLD, 1);
     } else if (c.scope == S_ACTION && (c.id == A_MODE_PATTERN || c.id == A_MODE_SONG || c.id == A_MODE_GLOBAL || c.id == A_MODE_MIDI || c.id == A_WRITE)) {
       gfx.text(c.label, c.cx + 8, c.cy - 8, C_WHITE, Gfx::F_TINY, 1);
+    } else if (c.scope == S_ACTION && c.id == A_SYNC && sync) {
+      // mode on the key, link state under it
+      gfx.text(kSyncModeNames[sync->mode()], c.cx + 8, c.cy - 8, C_WHITE, Gfx::F_TINY, 1);
+      const SyncStatus& ss = sync->status();
+      std::string l1, l2;
+      if (sync->mode() == SYNC_OFF) {}
+      else if (!sync->online()) l1 = "NO NETWORK";
+      else if (ss.haveLeader || ss.leading) {
+        char b[48]; int n = snprintf(b, sizeof b, "%d PEER%s", ss.peers, ss.peers == 1 ? "" : "S");
+        if (ss.haveLeader) snprintf(b + n, sizeof b - n, "  %+d ms", (int)std::lround(ss.offsetMs));
+        l1 = ss.leading ? "LEADING" : "FOLLOWING"; l2 = b;
+      }
+      else l1 = "NO PEERS YET";
+      if (!l1.empty()) gfx.text(l1, c.cx, c.cy + c.h / 2 + 6, C_TEXT, Gfx::F_TINY, 1);
+      if (!l2.empty()) gfx.text(l2, c.cx, c.cy + c.h / 2 + 20, C_TEXT_DIM, Gfx::F_TINY, 1);
     }
   } else {
     int cur = v;

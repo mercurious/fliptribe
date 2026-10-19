@@ -27,8 +27,8 @@ the owner's manual, the MIDI implementation, the service-manual block diagram an
 - The engine runs at the hardware's **39.0625 kHz** and is resampled by SDL, so the top end has the same
   bandwidth as the real thing.
 
-Not yet: Song mode, Pattern Set, Audio In as OSC1, MIDI (planned: clock sync between two Flip 2s over USB),
-and the hardware's one-motion-lane-per-part limit (fliptribe records one lane per knob).
+Not yet: Song mode, Pattern Set, Audio In as OSC1, MIDI (tempo and transport sync between units goes over
+Wi-Fi instead, see below), and the hardware's one-motion-lane-per-part limit (fliptribe records one lane per knob).
 
 Twelve original demo patterns ship in `patterns/` (A01 .. A12). They are new material written in the
 EA-1 idiom, not transcriptions of Korg's factory set.
@@ -57,7 +57,33 @@ Touch: drag a knob up/down (hold SHIFT for fine), tap keys. SHIFT latches for on
 
 Desktop testing (`fliptribe --window`): 1-8 and q-i are the step keys, space play, enter rec, backspace
 stop, k keyboard, p part, [ ] select, PageUp/PageDown cursor, , . dial, arrows focus, +/- turn, a press,
-f effect type, Tab tap, Ctrl+W write, Esc quit.
+f effect type, s Wi-Fi sync mode, Tab tap, Ctrl+W write, Esc quit.
+
+## Wi-Fi sync
+
+fliptribe locks tempo, transport and phase with other units on the same network: more Flip 2s, and the sibling
+grooveboxes [HI5](https://github.com/mercurious/hi5), [Jaffedrone](https://github.com/mercurious/jaffedrone)
+and Rap Machine, which all speak the same small protocol (UDP broadcast on port **5150**, ten packets a second
+carrying tempo, playing state and position in 16th notes). A mixed group elects one leader and everyone else
+follows it: Start/Stop, the tempo and the bar position all come from the leader, and followers stay in phase
+by trimming their playback speed by up to 3 % (jumping only when more than half a 16th out). 32nd and triplet
+scales and swing are mapped onto the shared 16th-note grid, so a triplet pattern here lines up bar for bar with
+a straight one on the leader.
+
+The **WI-FI SYNC** key in the sequence-control section steps through the modes; the key shows the mode and
+under it the link state (leading or following, peers heard, how far behind the leader in ms). The mode is kept
+in the settings, and `--sync OFF|AUTO|LEAD|FOLLOW` sets it from the command line.
+
+| Mode | |
+|---|---|
+| OFF | neither sends nor listens (default) |
+| AUTO | leads if no unit is set to LEAD and its random id is the lowest, otherwise follows |
+| LEAD | leads (if two are set to LEAD, the lowest id wins) |
+| FOLLOW | never leads |
+
+The Flip 2's Wi-Fi has to be on; the packets stay on the local network. `fliptribe_synctest LEAD|FOLLOW|AUTO
+BPM SECONDS [16TH|32ND|TRIPLET [SWING%]]` (CMake target, not built by default) runs the engine headless with the
+sync module, to check interop against HI5's or Jaffedrone's synctest on one machine.
 
 ## Build and install
 
@@ -85,6 +111,7 @@ python3 tools/make_patterns.py                      # regenerate the shipped dem
 - `src/engine.*` voices, sequencer, motion sequencing, the lock-free command queue and the UI snapshot.
 - `src/ui.*` the panel: layout, hit testing, touch / pad / keyboard handling, drawing.
 - `src/gfx.*` SDL_Renderer helpers, anti-aliased sprite rasteriser, 7-segment display, text cache.
+- `src/sync.*` Wi-Fi sync (the HI5S protocol shared with HI5, Jaffedrone and Rap Machine).
 - `src/store.*` JSON pattern files and settings. `docs/ea1-reference.md` the hardware reference.
 
 Fonts: Liberation Sans (SIL Open Font License, see `assets/fonts/LICENSE`). Code: MIT.
