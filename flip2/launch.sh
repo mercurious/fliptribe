@@ -1,8 +1,9 @@
 #!/bin/sh
-# fliptribe on the Retroid Pocket Flip 2 (ROCKNIX). Installed to /storage/apps/fliptribe by flip2/install.sh.
+# fliptribe on the Retroid Pocket Flip 2 (ROCKNIX). Runs from wherever it is installed: portmart puts it in
+# its apps root (e.g. /storage/games-external/fliptribe), flip2/install.sh in /storage/apps/fliptribe.
 # Leave with the Guide (Home) button, or Shift(B) + Select.
 [ -f /etc/profile ] && . /etc/profile >/dev/null 2>&1
-APP=/storage/apps/fliptribe
+APP=$(cd "$(dirname "$0")" && pwd)
 LOG=$APP/logs/launch.log
 mkdir -p "$APP/logs"
 echo "===== $(date -u +%FT%TZ) launch" >> "$LOG"

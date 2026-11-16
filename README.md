@@ -96,6 +96,22 @@ Then Ports > fliptribe in EmulationStation. Written patterns and settings live i
 `/storage/apps/fliptribe/data` and survive reinstalls. On the device the launcher is
 `/storage/apps/fliptribe/launch.sh`; `launch.sh --play --slot A03` starts a pattern straight away.
 
+### Releases (portmart)
+
+fliptribe is listed in [portmart](https://github.com/mercurious/portmart-catalog), which installs the newest
+**published** GitHub release, prerelease or not, and marks a prerelease `PRE`. A release needs one asset,
+`fliptribe-aarch64.tar.gz`, with `fliptribe-aarch64.tar.gz.sha256` beside it:
+
+```sh
+build/build.sh
+build/package.sh 0.1.0-pre.1   # VERSION file + dist/fliptribe-aarch64.tar.gz{,.sha256}
+gh release create v0.1.0-pre.1 --prerelease dist/fliptribe-aarch64.tar.gz dist/fliptribe-aarch64.tar.gz.sha256
+```
+
+The archive holds the app at its top level; portmart unpacks it into its apps root (on the Flip 2
+`/storage/games-external/fliptribe`), keeps `data/` and `logs/` across updates, and writes Ports > fliptribe.
+`launch.sh` finds its own directory, so both install paths work.
+
 Offline tools (no window, no audio device):
 
 ```sh
